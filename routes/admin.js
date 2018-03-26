@@ -1,678 +1,125 @@
-let express = require('express');
-let common = require('./common');
-let escape = require('html-entities').AllHtmlEntities;
-let async = require('async');
-let colors = require('colors');
-let _ = require('lodash');
-let router = express.Router();
+const express = require('express');
+const common = require('../lib/common');
+const escape = require('html-entities').AllHtmlEntities;
+const colors = require('colors');
+const bcrypt = require('bcryptjs');
+const fs = require('fs');
+const path = require('path');
+const multer = require('multer');
+const glob = require('glob');
+const router = express.Router();
 
 // Admin section
-router.get('/', common.restrict, (req, res, next) => {
+router.get('/admin', common.restrict, (req, res, next) => {
     res.redirect('/admin/orders');
 });
 
-// Admin section
-router.get('/orders', common.restrict, (req, res, next) => {
-    const db = req.app.db;
+// logout
+router.get('/admin/logout', (req, res) => {
+    req.session.user = null;
+    req.session.message = null;
+    req.session.messageType = null;
+    res.redirect('/');
+});
 
-    // Top 10 products
-    common.dbQuery(db.orders, {}, {'orderDate': -1}, 10, (err, orders) => {
+// login form
+router.get('/admin/login', (req, res) => {
+    let db = req.app.db;
+
+    db.users.count({}, (err, userCount) => {
         if(err){
-            console.info(err.stack);
+            // if there are no users set the "needsSetup" session
+            req.session.needsSetup = true;
+            res.redirect('/admin/setup');
         }
-        res.render('orders', {
-            title: 'Cart',
-            orders: orders,
-            admin: true,
-            config: common.getConfig(),
-            session: req.session,
-            message: common.clearSessionValue(req.session, 'message'),
-            messageType: common.clearSessionValue(req.session, 'messageType'),
-            helpers: req.handlebars.helpers
-        });
-    });
-});
-
-// Admin section
-router.get('/orders/bystatus/:orderstatus', common.restrict, (req, res, next) => {
-    const db = req.app.db;
-
-    if(typeof req.params.orderstatus === 'undefined'){
-        res.redirect('/admin/orders');
-        return;
-    }
-
-    // case insensitive search
-    let regex = new RegExp(['^', req.params.orderstatus, '$'].join(''), 'i');
-    common.dbQuery(db.orders, {orderStatus: regex}, {'orderDate': -1}, 10, (err, orders) => {
-        if(err){
-            console.info(err.stack);
-        }
-        res.render('orders', {
-            title: 'Cart',
-            orders: orders,
-            admin: true,
-            filteredOrders: true,
-            filteredStatus: req.params.orderstatus,
-            config: common.getConfig(),
-            session: req.session,
-            message: common.clearSessionValue(req.session, 'message'),
-            messageType: common.clearSessionValue(req.session, 'messageType'),
-            helpers: req.handlebars.helpers
-        });
-    });
-});
-
-// render the editor
-router.get('/order/view/:id', common.restrict, (req, res) => {
-    const db = req.app.db;
-    db.orders.findOne({_id: common.getId(req.params.id)}, (err, result) => {
-        if(err){
-            console.info(err.stack);
-        }
-        let productOptions = '';
-        if(result.options !== {}){
-            productOptions = result.options;
-        }
-        res.render('order', {
-            title: 'View order',
-            result: result,
-            productOptions: productOptions,
-            config: common.getConfig(),
-            session: req.session,
-            message: common.clearSessionValue(req.session, 'message'),
-            messageType: common.clearSessionValue(req.session, 'messageType'),
-            editor: true,
-            admin: true,
-            helpers: req.handlebars.helpers
-        });
-    });
-});
-
-// Admin section
-router.get('/orders/filter/:search', common.restrict, (req, res, next) => {
-    const db = req.app.db;
-    let searchTerm = req.params.search;
-    let ordersIndex = req.app.ordersIndex;
-
-    let lunrIdArray = [];
-    ordersIndex.search(searchTerm).forEach((id) => {
-        lunrIdArray.push(common.getId(id.ref));
-    });
-
-    // we search on the lunr indexes
-    common.dbQuery(db.orders, {_id: {$in: lunrIdArray}}, null, null, (err, orders) => {
-        if(err){
-            console.info(err.stack);
-        }
-        res.render('orders', {
-            title: 'Order results',
-            orders: orders,
-            admin: true,
-            config: common.getConfig(),
-            session: req.session,
-            searchTerm: searchTerm,
-            message: common.clearSessionValue(req.session, 'message'),
-            messageType: common.clearSessionValue(req.session, 'messageType'),
-            helpers: req.handlebars.helpers
-        });
-    });
-});
-
-// order product
-router.get('/order/delete/:id', common.restrict, (req, res) => {
-    const db = req.app.db;
-
-    // remove the article
-    db.orders.remove({_id: common.getId(req.params.id)}, {}, (err, numRemoved) => {
-        if(err){
-            console.info(err.stack);
-        }
-        // remove the index
-        common.indexOrders(req.app)
-        .then(() => {
-            // redirect home
-            req.session.message = 'Order successfully deleted';
-            req.session.messageType = 'success';
-            res.redirect('/admin/orders');
-        });
-    });
-});
-
-// update order status
-router.post('/order/statusupdate', common.restrict, (req, res) => {
-    const db = req.app.db;
-    db.orders.update({_id: common.getId(req.body.order_id)}, {$set: {orderStatus: req.body.status}}, {multi: false}, (err, numReplaced) => {
-        if(err){
-            console.info(err.stack);
-        }
-        res.status(200).json({message: 'Status successfully updated'});
-    });
-});
-
-// Admin section
-router.get('/products', common.restrict, (req, res, next) => {
-    const db = req.app.db;
-    // get the top results
-    common.dbQuery(db.products, {}, {'productAddedDate': -1}, 10, (err, topResults) => {
-        if(err){
-            console.info(err.stack);
-        }
-        res.render('products', {
-            title: 'Cart',
-            top_results: topResults,
-            session: req.session,
-            admin: true,
-            config: common.getConfig(),
-            message: common.clearSessionValue(req.session, 'message'),
-            messageType: common.clearSessionValue(req.session, 'messageType'),
-            helpers: req.handlebars.helpers
-        });
-    });
-});
-
-// Admin section
-router.post('/product/addtocart', (req, res, next) => {
-    const db = req.app.db;
-    let productQuantity = req.body.productQuantity ? parseInt(req.body.productQuantity) : 1;
-
-    // setup cart object if it doesn't exist
-    if(!req.session.cart){
-        req.session.cart = [];
-    }
-
-    db.products.findOne({_id: common.getId(req.body.productId)}, (err, product) => {
-        if(err){
-            console.error(colors.red('Error adding to cart', err));
-        }
-
-        if(product){
-            let productPrice = parseFloat(product.productPrice).toFixed(2);
-
-            // doc used to test if existing in the cart with the options. If not found, we add new.
-            let options = {};
-            if(req.body.productOptions){
-                options = JSON.parse(req.body.productOptions);
-            }
-            let findDoc = {
-                productId: req.body.productId,
-                options: options
-            };
-
-            // if exists we add to the existing value
-            let cartIndex = _.findIndex(req.session.cart, findDoc);
-            if(cartIndex > -1){
-                req.session.cart[cartIndex].quantity = parseInt(req.session.cart[cartIndex].quantity) + productQuantity;
-                req.session.cart[cartIndex].totalItemPrice = productPrice * parseInt(req.session.cart[cartIndex].quantity);
-            }else{
-                // Doesnt exist so we add to the cart session
-                req.session.cartTotalItems = req.session.cartTotalItems + productQuantity;
-
-                // new product deets
-                let productObj = {};
-                productObj.productId = req.body.productId;
-                productObj.title = product.productTitle;
-                productObj.quantity = productQuantity;
-                productObj.totalItemPrice = productPrice * productQuantity;
-                productObj.options = options;
-                productObj.productImage = product.productImage;
-                if(product.productPermalink){
-                    productObj.link = product.productPermalink;
-                }else{
-                    productObj.link = product._id;
-                }
-
-                // merge into the current cart
-                req.session.cart.push(productObj);
-            }
-
-            // update total cart amount
-            common.updateTotalCartAmount(req, res);
-
-            // update how many products in the shopping cart
-            req.session.cartTotalItems = Object.keys(req.session.cart).length;
-            res.status(200).json({message: 'Cart successfully updated', totalCartItems: Object.keys(req.session.cart).length});
-        }else{
-            res.status(400).json({message: 'Error updating cart. Please try again.'});
-        }
-    });
-});
-
-// Updates a single product quantity
-router.post('/product/updatecart', (req, res, next) => {
-    const db = req.app.db;
-    let cartItems = JSON.parse(req.body.items);
-    let hasError = false;
-
-    async.eachSeries(cartItems, (cartItem, callback) => {
-        let productQuantity = cartItem.itemQuantity ? cartItem.itemQuantity : 1;
-        if(cartItem.itemQuantity === 0){
-            // quantity equals zero so we remove the item
-            req.session.cart.splice(cartItem.cartIndex, 1);
-            callback(null);
-        }else{
-            db.products.findOne({_id: common.getId(cartItem.productId)}, (err, product) => {
-                if(err){
-                    console.error(colors.red('Error updating cart', err));
-                }
-                if(product){
-                    let productPrice = parseFloat(product.productPrice).toFixed(2);
-                    if(req.session.cart[cartItem.cartIndex]){
-                        req.session.cart[cartItem.cartIndex].quantity = productQuantity;
-                        req.session.cart[cartItem.cartIndex].totalItemPrice = productPrice * productQuantity;
-                        callback(null);
-                    }
-                }else{
-                    hasError = true;
-                    callback(null);
-                }
-            });
-        }
-    }, () => {
-        // update total cart amount
-        common.updateTotalCartAmount(req, res);
-
-        // show response
-        if(hasError === false){
-            res.status(200).json({message: 'Cart successfully updated', totalCartItems: Object.keys(req.session.cart).length});
-        }else{
-            res.status(400).json({message: 'There was an error updating the cart', totalCartItems: Object.keys(req.session.cart).length});
-        }
-    });
-});
-
-// Remove single product from cart
-router.post('/product/removefromcart', (req, res, next) => {
-    // remove item from cart
-    async.each(req.session.cart, (item, callback) => {
-        if(item){
-            if(item.productId === req.body.cart_index){
-                req.session.cart.splice(req.session.cart.indexOf(item), 1);
-            }
-        }
-        callback();
-    }, () => {
-        // update total cart amount
-        common.updateTotalCartAmount(req, res);
-        res.status(200).json({message: 'Product successfully removed', totalCartItems: Object.keys(req.session.cart).length});
-    });
-});
-
-// Totally empty the cart
-router.post('/product/emptycart', (req, res, next) => {
-    delete req.session.cart;
-    delete req.session.orderId;
-
-    // update total cart amount
-    common.updateTotalCartAmount(req, res);
-    res.status(200).json({message: 'Cart successfully emptied', totalCartItems: 0});
-});
-
-// Admin section
-router.get('/products/filter/:search', common.restrict, (req, res, next) => {
-    const db = req.app.db;
-    let searchTerm = req.params.search;
-    let productsIndex = req.app.productsIndex;
-
-    let lunrIdArray = [];
-    productsIndex.search(searchTerm).forEach((id) => {
-        lunrIdArray.push(common.getId(id.ref));
-    });
-
-    // we search on the lunr indexes
-    common.dbQuery(db.products, {_id: {$in: lunrIdArray}}, null, null, (err, results) => {
-        if(err){
-            console.error(colors.red('Error searching', err));
-        }
-        res.render('products', {
-            title: 'Results',
-            results: results,
-            admin: true,
-            config: common.getConfig(),
-            session: req.session,
-            searchTerm: searchTerm,
-            message: common.clearSessionValue(req.session, 'message'),
-            messageType: common.clearSessionValue(req.session, 'messageType'),
-            helpers: req.handlebars.helpers
-        });
-    });
-});
-
-// insert form
-router.get('/product/new', common.restrict, (req, res) => {
-    res.render('product_new', {
-        title: 'New product',
-        session: req.session,
-        productTitle: common.clearSessionValue(req.session, 'productTitle'),
-        productDescription: common.clearSessionValue(req.session, 'productDescription'),
-        productPrice: common.clearSessionValue(req.session, 'productPrice'),
-        productPermalink: common.clearSessionValue(req.session, 'productPermalink'),
-        message: common.clearSessionValue(req.session, 'message'),
-        messageType: common.clearSessionValue(req.session, 'messageType'),
-        editor: true,
-        admin: true,
-        helpers: req.handlebars.helpers,
-        config: common.getConfig()
-    });
-});
-
-// insert new product form action
-router.post('/product/insert', common.restrict, (req, res) => {
-    const db = req.app.db;
-
-    let doc = {
-        productPermalink: req.body.frmProductPermalink,
-        productTitle: req.body.frmProductTitle,
-        productPrice: req.body.frmProductPrice,
-        productDescription: req.body.frmProductDescription,
-        productPublished: req.body.frmProductPublished,
-        productTags: req.body.frmProductTags,
-        productOptions: req.body.productOptJson,
-        productAddedDate: new Date()
-    };
-
-    db.products.count({'productPermalink': req.body.frmProductPermalink}, (err, product) => {
-        if(err){
-            console.info(err.stack);
-        }
-        if(product > 0 && req.body.frmProductPermalink !== ''){
-            // permalink exits
-            req.session.message = 'Permalink already exists. Pick a new one.';
-            req.session.messageType = 'danger';
-
-            // keep the current stuff
-            req.session.productTitle = req.body.frmProductTitle;
-            req.session.productDescription = req.body.frmProductDescription;
-            req.session.productPrice = req.body.frmProductPrice;
-            req.session.productPermalink = req.body.frmProductPermalink;
-            req.session.productPermalink = req.body.productOptJson;
-            req.session.productTags = req.body.frmProductTags;
-
-            // redirect to insert
-            res.redirect('/admin/insert');
-        }else{
-            db.products.insert(doc, (err, newDoc) => {
-                if(err){
-                    console.log(colors.red('Error inserting document: ' + err));
-
-                    // keep the current stuff
-                    req.session.productTitle = req.body.frmProductTitle;
-                    req.session.productDescription = req.body.frmProductDescription;
-                    req.session.productPrice = req.body.frmProductPrice;
-                    req.session.productPermalink = req.body.frmProductPermalink;
-                    req.session.productPermalink = req.body.productOptJson;
-                    req.session.productTags = req.body.frmProductTags;
-
-                    req.session.message = 'Error: Inserting product';
-                    req.session.messageType = 'danger';
-
-                    // redirect to insert
-                    res.redirect('/admin/product/new');
-                }else{
-                    // get the new ID
-                    let newId = newDoc.insertedIds;
-
-                    // add to lunr index
-                    common.indexProducts(req.app)
-                    .then(() => {
-                        req.session.message = 'New product successfully created';
-                        req.session.messageType = 'success';
-
-                        // redirect to new doc
-                        res.redirect('/admin/product/edit/' + newId);
-                    });
-                }
-            });
-        }
-    });
-});
-
-// render the editor
-router.get('/product/edit/:id', common.restrict, (req, res) => {
-    const db = req.app.db;
-
-    common.getImages(req.params.id, req, res, (images) => {
-        db.products.findOne({_id: common.getId(req.params.id)}, (err, result) => {
-            if(err){
-                console.info(err.stack);
-            }
-            let options = {};
-            if(result.productOptions){
-                options = JSON.parse(result.productOptions);
-            }
-
-            res.render('product_edit', {
-                title: 'Edit product',
-                result: result,
-                images: images,
-                options: options,
-                admin: true,
-                session: req.session,
+        // we check for a user. If one exists, redirect to login form otherwise setup
+        if(userCount > 0){
+            // set needsSetup to false as a user exists
+            req.session.needsSetup = false;
+            res.render('login', {
+                title: 'Login',
+                referringUrl: req.header('Referer'),
+                config: req.app.config,
                 message: common.clearSessionValue(req.session, 'message'),
                 messageType: common.clearSessionValue(req.session, 'messageType'),
-                config: common.getConfig(),
-                editor: true,
-                helpers: req.handlebars.helpers
+                helpers: req.handlebars.helpers,
+                showFooter: 'showFooter'
             });
-        });
+        }else{
+            // if there are no users set the "needsSetup" session
+            req.session.needsSetup = true;
+            res.redirect('/admin/setup');
+        }
     });
 });
 
-// Update an existing product form action
-router.post('/product/update', common.restrict, (req, res) => {
-    const db = req.app.db;
+// login the user and check the password
+router.post('/admin/login_action', (req, res) => {
+    let db = req.app.db;
 
-    db.products.findOne({_id: common.getId(req.body.frmProductId)}, (err, product) => {
+    db.users.findOne({userEmail: req.body.email}, (err, user) => {
         if(err){
-            console.info(err.stack);
-            req.session.message = 'Failed updating product.';
-            req.session.messageType = 'danger';
-            res.redirect('/admin/product/edit/' + req.body.frmProductId);
-            return;
-        }
-        db.products.count({'productPermalink': req.body.frmProductPermalink, _id: {$ne: common.getId(product._id)}}, (err, count) => {
-            if(err){
-                console.info(err.stack);
-                req.session.message = 'Failed updating product.';
-                req.session.messageType = 'danger';
-                res.redirect('/admin/product/edit/' + req.body.frmProductId);
-                return;
-            }
-            if(count > 0 && req.body.frmProductPermalink !== ''){
-                // permalink exits
-                req.session.message = 'Permalink already exists. Pick a new one.';
-                req.session.messageType = 'danger';
-
-                // keep the current stuff
-                req.session.productTitle = req.body.frmProductTitle;
-                req.session.productDescription = req.body.frmProductDescription;
-                req.session.productPrice = req.body.frmProductPrice;
-                req.session.productPermalink = req.body.frmProductPermalink;
-                req.session.productTags = req.body.frmProductTags;
-                req.session.productOptions = req.body.productOptJson;
-
-                // redirect to insert
-                res.redirect('/admin/product/edit/' + req.body.frmProductId);
-            }else{
-                common.getImages(req.body.frmProductId, req, res, (images) => {
-                    let productDoc = {
-                        productTitle: req.body.frmProductTitle,
-                        productDescription: req.body.frmProductDescription,
-                        productPublished: req.body.frmProductPublished,
-                        productPrice: req.body.frmProductPrice,
-                        productPermalink: req.body.frmProductPermalink,
-                        productTags: req.body.frmProductTags,
-                        productOptions: req.body.productOptJson
-                    };
-
-                    // if no featured image
-                    if(!product.productImage){
-                        if(images.length > 0){
-                            productDoc['productImage'] = images[0].path;
-                        }else{
-                            productDoc['productImage'] = '/uploads/placeholder.png';
-                        }
-                    }else{
-                        productDoc['productImage'] = product.productImage;
-                    }
-
-                    db.products.update({_id: common.getId(req.body.frmProductId)}, {$set: productDoc}, {}, (err, numReplaced) => {
-                        if(err){
-                            console.error(colors.red('Failed to save product: ' + err));
-                            req.session.message = 'Failed to save. Please try again';
-                            req.session.messageType = 'danger';
-                            res.redirect('/admin/product/edit/' + req.body.frmProductId);
-                        }else{
-                            // Update the index
-                            common.indexProducts(req.app)
-                            .then(() => {
-                                req.session.message = 'Successfully saved';
-                                req.session.messageType = 'success';
-                                res.redirect('/admin/product/edit/' + req.body.frmProductId);
-                            });
-                        }
-                    });
-                });
-            }
-        });
-    });
-});
-
-// delete product
-router.get('/product/delete/:id', common.restrict, (req, res) => {
-    const db = req.app.db;
-    let rimraf = require('rimraf');
-
-    // remove the article
-    db.products.remove({_id: common.getId(req.params.id)}, {}, (err, numRemoved) => {
-        if(err){
-            console.info(err.stack);
-        }
-        // delete any images and folder
-        rimraf('public/uploads/' + req.params.id, (err) => {
-            if(err){
-                console.info(err.stack);
-            }
-
-            // remove the index
-            common.indexProducts(req.app)
-            .then(() => {
-                // redirect home
-                req.session.message = 'Product successfully deleted';
-                req.session.messageType = 'success';
-                res.redirect('/admin/products');
-            });
-        });
-    });
-});
-
-// users
-router.get('/users', common.restrict, (req, res) => {
-    const db = req.app.db;
-    db.users.find({}).toArray((err, users) => {
-        if(err){
-            console.info(err.stack);
-        }
-        res.render('users', {
-            title: 'Users',
-            users: users,
-            admin: true,
-            config: common.getConfig(),
-            isAdmin: req.session.isAdmin,
-            helpers: req.handlebars.helpers,
-            session: req.session,
-            message: common.clearSessionValue(req.session, 'message'),
-            messageType: common.clearSessionValue(req.session, 'messageType')
-        });
-    });
-});
-
-// edit user
-router.get('/user/edit/:id', common.restrict, (req, res) => {
-    const db = req.app.db;
-    db.users.findOne({_id: common.getId(req.params.id)}, (err, user) => {
-        if(err){
-            console.info(err.stack);
-        }
-        // if the user we want to edit is not the current logged in user and the current user is not
-        // an admin we render an access denied message
-        if(user.userEmail !== req.session.user && req.session.isAdmin === 'false'){
-            req.session.message = 'Access denied';
-            req.session.messageType = 'danger';
-            res.redirect('/Users/');
+            res.status(400).json({message: 'A user with that email does not exist.'});
             return;
         }
 
-        res.render('user_edit', {
-            title: 'User edit',
-            user: user,
-            admin: true,
-            session: req.session,
-            message: common.clearSessionValue(req.session, 'message'),
-            messageType: common.clearSessionValue(req.session, 'messageType'),
-            helpers: req.handlebars.helpers,
-            config: common.getConfig()
-        });
-    });
-});
-
-// update a user
-router.post('/user/update', common.restrict, (req, res) => {
-    const db = req.app.db;
-    let bcrypt = req.bcrypt;
-
-    let isAdmin = req.body.user_admin === 'on' ? 'true' : 'false';
-
-    // get the user we want to update
-    db.users.findOne({_id: common.getId(req.body.userId)}, (err, user) => {
-        if(err){
-            console.info(err.stack);
-        }
-        // if the user we want to edit is not the current logged in user and the current user is not
-        // an admin we render an access denied message
-        if(user.userEmail !== req.session.user && req.session.isAdmin === 'false'){
-            req.session.message = 'Access denied';
-            req.session.messageType = 'danger';
-            res.redirect('/admin/users/');
-            return;
-        }
-
-        // create the update doc
-        let updateDoc = {};
-        updateDoc.isAdmin = isAdmin;
-        updateDoc.usersName = req.body.usersName;
-        if(req.body.userPassword){
-            updateDoc.userPassword = bcrypt.hashSync(req.body.userPassword);
-        }
-
-        db.users.update({_id: common.getId(req.body.userId)},
-            {
-                $set: updateDoc
-            }, {multi: false}, (err, numReplaced) => {
-                if(err){
-                    console.error(colors.red('Failed updating user: ' + err));
-                    req.session.message = 'Failed to update user';
-                    req.session.messageType = 'danger';
-                    res.redirect('/admin/user/edit/' + req.body.userId);
+        // check if user exists with that email
+        if(user === undefined || user === null){
+            res.status(400).json({message: 'A user with that email does not exist.'});
+        }else{
+            // we have a user under that email so we compare the password
+            bcrypt.compare(req.body.password, user.userPassword)
+            .then((result) => {
+                if(result){
+                    req.session.user = req.body.email;
+                    req.session.usersName = user.usersName;
+                    req.session.userId = user._id.toString();
+                    req.session.isAdmin = user.isAdmin;
+                    res.status(200).json({message: 'Login successful'});
                 }else{
-                    // show the view
-                    req.session.message = 'User account updated.';
-                    req.session.messageType = 'success';
-                    res.redirect('/admin/user/edit/' + req.body.userId);
+                    // password is not correct
+                    res.status(400).json({message: 'Access denied. Check password and try again.'});
                 }
             });
+        }
+    });
+});
+
+// setup form is shown when there are no users setup in the DB
+router.get('/admin/setup', (req, res) => {
+    let db = req.app.db;
+
+    db.users.count({}, (err, userCount) => {
+        if(err){
+            console.error(colors.red('Error getting users for setup', err));
+        }
+        // dont allow the user to "re-setup" if a user exists.
+        // set needsSetup to false as a user exists
+        req.session.needsSetup = false;
+        if(userCount === 0){
+            req.session.needsSetup = true;
+            res.render('setup', {
+                title: 'Setup',
+                config: req.app.config,
+                helpers: req.handlebars.helpers,
+                message: common.clearSessionValue(req.session, 'message'),
+                messageType: common.clearSessionValue(req.session, 'messageType'),
+                showFooter: 'showFooter'
+            });
+        }else{
+            res.redirect('/admin/login');
+        }
     });
 });
 
 // insert a user
-router.post('/setup_action', (req, res) => {
+router.post('/admin/setup_action', (req, res) => {
     const db = req.app.db;
-    let bcrypt = req.bcrypt;
 
     let doc = {
         usersName: req.body.usersName,
         userEmail: req.body.userEmail,
-        userPassword: bcrypt.hashSync(req.body.userPassword),
+        userPassword: bcrypt.hashSync(req.body.userPassword, 10),
         isAdmin: true
     };
 
@@ -689,189 +136,21 @@ router.post('/setup_action', (req, res) => {
                     console.error(colors.red('Failed to insert user: ' + err));
                     req.session.message = 'Setup failed';
                     req.session.messageType = 'danger';
-                    res.redirect('/setup');
+                    res.redirect('/admin/setup');
                 }else{
                     req.session.message = 'User account inserted';
                     req.session.messageType = 'success';
-                    res.redirect('/login');
+                    res.redirect('/admin/login');
                 }
             });
         }else{
-            res.redirect('/login');
+            res.redirect('/admin/login');
         }
     });
-});
-
-// insert a user
-router.post('/user/insert', common.restrict, (req, res) => {
-    const db = req.app.db;
-    let bcrypt = req.bcrypt;
-    let url = require('url');
-
-    // set the account to admin if using the setup form. Eg: First user account
-    let urlParts = url.parse(req.header('Referer'));
-
-    let isAdmin = 'false';
-    if(urlParts.path === '/setup'){
-        isAdmin = 'true';
-    }
-
-    let doc = {
-        usersName: req.body.usersName,
-        userEmail: req.body.userEmail,
-        userPassword: bcrypt.hashSync(req.body.userPassword),
-        isAdmin: isAdmin
-    };
-
-    // check for existing user
-    db.users.findOne({'userEmail': req.body.userEmail}, (err, user) => {
-        if(user){
-            // user already exists with that email address
-            console.error(colors.red('Failed to insert user, possibly already exists: ' + err));
-            req.session.message = 'A user with that email address already exists';
-            req.session.messageType = 'danger';
-            res.redirect('/admin/user/new');
-            return;
-        }
-        // email is ok to be used.
-        db.users.insert(doc, (err, doc) => {
-            // show the view
-            if(err){
-                if(doc){
-                    console.error(colors.red('Failed to insert user: ' + err));
-                    req.session.message = 'User exists';
-                    req.session.messageType = 'danger';
-                    res.redirect('/admin/user/edit/' + doc._id);
-                    return;
-                }
-                console.error(colors.red('Failed to insert user: ' + err));
-                req.session.message = 'New user creation failed';
-                req.session.messageType = 'danger';
-                res.redirect('/admin/user/new');
-                return;
-            }
-            req.session.message = 'User account inserted';
-            req.session.messageType = 'success';
-
-            // if from setup we add user to session and redirect to login.
-            // Otherwise we show users screen
-            if(urlParts.path === '/setup'){
-                req.session.user = req.body.userEmail;
-                res.redirect('/login');
-                return;
-            }
-            res.redirect('/admin/users');
-        });
-    });
-});
-
-// render the customer view
-router.get('/customer/view/:id?', common.restrict, (req, res) => {
-    const db = req.app.db;
-
-    console.log('here');
-
-    db.customers.findOne({_id: common.getId(req.params.id)}, (err, result) => {
-        if(err){
-            console.info(err.stack);
-        }
-
-        res.render('customer', {
-            title: 'View customer',
-            result: result,
-            admin: true,
-            session: req.session,
-            message: common.clearSessionValue(req.session, 'message'),
-            messageType: common.clearSessionValue(req.session, 'messageType'),
-            config: common.getConfig(),
-            editor: true,
-            helpers: req.handlebars.helpers
-        });
-    });
-});
-
-// customers list
-router.get('/customers', common.restrict, (req, res) => {
-    const db = req.app.db;
-
-    db.customers.find({}).limit(20).sort({created: -1}).toArray((err, customers) => {
-        res.render('customers', {
-            title: 'Customers - List',
-            admin: true,
-            customers: customers,
-            session: req.session,
-            helpers: req.handlebars.helpers,
-            message: common.clearSessionValue(req.session, 'message'),
-            messageType: common.clearSessionValue(req.session, 'messageType'),
-            config: common.getConfig()
-        });
-    });
-});
-
-// Filtered customers list
-router.get('/customers/filter/:search', common.restrict, (req, res, next) => {
-    const db = req.app.db;
-    let searchTerm = req.params.search;
-    let customersIndex = req.app.customersIndex;
-
-    let lunrIdArray = [];
-    customersIndex.search(searchTerm).forEach((id) => {
-        lunrIdArray.push(common.getId(id.ref));
-    });
-
-    // we search on the lunr indexes
-    db.customers.find({_id: {$in: lunrIdArray}}).sort({created: -1}).toArray((err, customers) => {
-        if(err){
-            console.error(colors.red('Error searching', err));
-        }
-        res.render('customers', {
-            title: 'Customer results',
-            customers: customers,
-            admin: true,
-            config: common.getConfig(),
-            session: req.session,
-            searchTerm: searchTerm,
-            message: common.clearSessionValue(req.session, 'message'),
-            messageType: common.clearSessionValue(req.session, 'messageType'),
-            helpers: req.handlebars.helpers
-        });
-    });
-});
-
-// users new
-router.get('/user/new', common.restrict, (req, res) => {
-    res.render('user_new', {
-        title: 'User - New',
-        admin: true,
-        session: req.session,
-        helpers: req.handlebars.helpers,
-        message: common.clearSessionValue(req.session, 'message'),
-        messageType: common.clearSessionValue(req.session, 'messageType'),
-        config: common.getConfig()
-    });
-});
-
-// delete user
-router.get('/user/delete/:id', common.restrict, (req, res) => {
-    const db = req.app.db;
-    if(req.session.isAdmin === 'true'){
-        db.users.remove({_id: common.getId(req.params.id)}, {}, (err, numRemoved) => {
-            if(err){
-                console.info(err.stack);
-            }
-            req.session.message = 'User deleted.';
-            req.session.messageType = 'success';
-            res.redirect('/admin/users');
-        });
-    }else{
-        req.session.message = 'Access denied.';
-        req.session.messageType = 'danger';
-        res.redirect('/admin/users');
-    }
 });
 
 // settings update
-router.get('/settings', common.restrict, (req, res) => {
+router.get('/admin/settings', common.restrict, (req, res) => {
     res.render('settings', {
         title: 'Cart settings',
         session: req.session,
@@ -880,14 +159,14 @@ router.get('/settings', common.restrict, (req, res) => {
         message: common.clearSessionValue(req.session, 'message'),
         messageType: common.clearSessionValue(req.session, 'messageType'),
         helpers: req.handlebars.helpers,
-        config: common.getConfig(),
-        footerHtml: typeof common.getConfig().footerHtml !== 'undefined' ? escape.decode(common.getConfig().footerHtml) : null,
-        googleAnalytics: typeof common.getConfig().googleAnalytics !== 'undefined' ? escape.decode(common.getConfig().googleAnalytics) : null
+        config: req.app.config,
+        footerHtml: typeof req.app.config.footerHtml !== 'undefined' ? escape.decode(req.app.config.footerHtml) : null,
+        googleAnalytics: typeof req.app.config.googleAnalytics !== 'undefined' ? escape.decode(req.app.config.googleAnalytics) : null
     });
 });
 
 // settings update
-router.post('/settings/update', common.restrict, (req, res) => {
+router.post('/admin/settings/update', common.restrict, common.checkAccess, (req, res) => {
     let result = common.updateConfig(req.body);
     if(result === true){
         res.status(200).json({message: 'Settings successfully updated'});
@@ -897,13 +176,13 @@ router.post('/settings/update', common.restrict, (req, res) => {
 });
 
 // settings update
-router.post('/settings/option/remove', common.restrict, (req, res) => {
+router.post('/admin/settings/option/remove', common.restrict, common.checkAccess, (req, res) => {
     const db = req.app.db;
     db.products.findOne({_id: common.getId(req.body.productId)}, (err, product) => {
         if(err){
             console.info(err.stack);
         }
-        if(product.productOptions){
+        if(product && product.productOptions){
             let optJson = JSON.parse(product.productOptions);
             delete optJson[req.body.optName];
 
@@ -918,13 +197,13 @@ router.post('/settings/option/remove', common.restrict, (req, res) => {
                 }
             });
         }else{
-            res.status(400).json({message: 'Product not found.'});
+            res.status(400).json({message: 'Product not found. Try saving before removing.'});
         }
     });
 });
 
 // settings update
-router.get('/settings/menu', common.restrict, async (req, res) => {
+router.get('/admin/settings/menu', common.restrict, async (req, res) => {
     const db = req.app.db;
     res.render('settings_menu', {
         title: 'Cart menu',
@@ -933,15 +212,15 @@ router.get('/settings/menu', common.restrict, async (req, res) => {
         message: common.clearSessionValue(req.session, 'message'),
         messageType: common.clearSessionValue(req.session, 'messageType'),
         helpers: req.handlebars.helpers,
-        config: common.getConfig(),
+        config: req.app.config,
         menu: common.sortMenu(await common.getMenu(db))
     });
 });
 
 // settings page list
-router.get('/settings/pages', common.restrict, (req, res) => {
+router.get('/admin/settings/pages', common.restrict, (req, res) => {
     const db = req.app.db;
-    common.dbQuery(db.pages, {}, null, null, async (err, pages) => {
+    db.pages.find({}).toArray(async (err, pages) => {
         if(err){
             console.info(err.stack);
         }
@@ -954,14 +233,14 @@ router.get('/settings/pages', common.restrict, (req, res) => {
             message: common.clearSessionValue(req.session, 'message'),
             messageType: common.clearSessionValue(req.session, 'messageType'),
             helpers: req.handlebars.helpers,
-            config: common.getConfig(),
+            config: req.app.config,
             menu: common.sortMenu(await common.getMenu(db))
         });
     });
 });
 
 // settings pages new
-router.get('/settings/pages/new', common.restrict, async (req, res) => {
+router.get('/admin/settings/pages/new', common.restrict, common.checkAccess, async (req, res) => {
     const db = req.app.db;
 
     res.render('settings_page_edit', {
@@ -972,13 +251,13 @@ router.get('/settings/pages/new', common.restrict, async (req, res) => {
         message: common.clearSessionValue(req.session, 'message'),
         messageType: common.clearSessionValue(req.session, 'messageType'),
         helpers: req.handlebars.helpers,
-        config: common.getConfig(),
+        config: req.app.config,
         menu: common.sortMenu(await common.getMenu(db))
     });
 });
 
 // settings pages editor
-router.get('/settings/pages/edit/:page', common.restrict, (req, res) => {
+router.get('/admin/settings/pages/edit/:page', common.restrict, common.checkAccess, (req, res) => {
     const db = req.app.db;
     db.pages.findOne({_id: common.getId(req.params.page)}, async (err, page) => {
         if(err){
@@ -996,14 +275,14 @@ router.get('/settings/pages/edit/:page', common.restrict, (req, res) => {
                 message: common.clearSessionValue(req.session, 'message'),
                 messageType: common.clearSessionValue(req.session, 'messageType'),
                 helpers: req.handlebars.helpers,
-                config: common.getConfig(),
+                config: req.app.config,
                 menu
             });
         }else{
             // 404 it!
             res.status(404).render('error', {
                 title: '404 Error - Page not found',
-                config: common.getConfig(),
+                config: req.app.config,
                 message: '404 Error - Page not found',
                 helpers: req.handlebars.helpers,
                 showFooter: 'showFooter',
@@ -1014,7 +293,7 @@ router.get('/settings/pages/edit/:page', common.restrict, (req, res) => {
 });
 
 // settings update page
-router.post('/settings/pages/update', common.restrict, (req, res) => {
+router.post('/admin/settings/pages/update', common.restrict, common.checkAccess, (req, res) => {
     const db = req.app.db;
 
     let doc = {
@@ -1054,7 +333,7 @@ router.post('/settings/pages/update', common.restrict, (req, res) => {
 });
 
 // settings delete page
-router.get('/settings/pages/delete/:page', common.restrict, (req, res) => {
+router.get('/admin/settings/pages/delete/:page', common.restrict, common.checkAccess, (req, res) => {
     const db = req.app.db;
     db.pages.remove({_id: common.getId(req.params.page)}, {}, (err, numRemoved) => {
         if(err){
@@ -1070,7 +349,7 @@ router.get('/settings/pages/delete/:page', common.restrict, (req, res) => {
 });
 
 // new menu item
-router.post('/settings/menu/new', common.restrict, (req, res) => {
+router.post('/admin/settings/menu/new', common.restrict, common.checkAccess, (req, res) => {
     let result = common.newMenu(req, res);
     if(result === false){
         req.session.message = 'Failed creating menu.';
@@ -1080,7 +359,7 @@ router.post('/settings/menu/new', common.restrict, (req, res) => {
 });
 
 // update existing menu item
-router.post('/settings/menu/update', common.restrict, (req, res) => {
+router.post('/admin/settings/menu/update', common.restrict, common.checkAccess, (req, res) => {
     let result = common.updateMenu(req, res);
     if(result === false){
         req.session.message = 'Failed updating menu.';
@@ -1090,7 +369,7 @@ router.post('/settings/menu/update', common.restrict, (req, res) => {
 });
 
 // delete menu item
-router.get('/settings/menu/delete/:menuid', common.restrict, (req, res) => {
+router.get('/admin/settings/menu/delete/:menuid', common.restrict, common.checkAccess, (req, res) => {
     let result = common.deleteMenu(req, res, req.params.menuid);
     if(result === false){
         req.session.message = 'Failed deleting menu.';
@@ -1100,7 +379,7 @@ router.get('/settings/menu/delete/:menuid', common.restrict, (req, res) => {
 });
 
 // We call this via a Ajax call to save the order from the sortable list
-router.post('/settings/menu/save_order', common.restrict, (req, res) => {
+router.post('/admin/settings/menu/save_order', common.restrict, common.checkAccess, (req, res) => {
     let result = common.orderMenu(req, res);
     if(result === false){
         res.status(400).json({message: 'Failed saving menu order'});
@@ -1110,7 +389,7 @@ router.post('/settings/menu/save_order', common.restrict, (req, res) => {
 });
 
 // validate the permalink
-router.post('/api/validate_permalink', (req, res) => {
+router.post('/admin/api/validate_permalink', (req, res) => {
     // if doc id is provided it checks for permalink in any products other that one provided,
     // else it just checks for any products with that permalink
     const db = req.app.db;
@@ -1127,91 +406,17 @@ router.post('/api/validate_permalink', (req, res) => {
             console.info(err.stack);
         }
         if(products > 0){
-            res.writeHead(400, {'Content-Type': 'application/text'});
-            res.end('Permalink already exists');
+            res.status(400).json({message: 'Permalink already exists'});
         }else{
-            res.writeHead(200, {'Content-Type': 'application/text'});
-            res.end('Permalink validated successfully');
-        }
-    });
-});
-
-// update the published state based on an ajax call from the frontend
-router.post('/product/published_state', common.restrict, (req, res) => {
-    const db = req.app.db;
-
-    db.products.update({_id: common.getId(req.body.id)}, {$set: {productPublished: req.body.state}}, {multi: false}, (err, numReplaced) => {
-        if(err){
-            console.error(colors.red('Failed to update the published state: ' + err));
-            res.writeHead(400, {'Content-Type': 'application/text'});
-            res.end('Published state not updated');
-        }else{
-            res.writeHead(200, {'Content-Type': 'application/text'});
-            res.end('Published state updated');
-        }
-    });
-});
-
-// set as main product image
-router.post('/product/setasmainimage', common.restrict, (req, res) => {
-    const db = req.app.db;
-
-    // update the productImage to the db
-    db.products.update({_id: common.getId(req.body.product_id)}, {$set: {productImage: req.body.productImage}}, {multi: false}, (err, numReplaced) => {
-        if(err){
-            res.status(400).json({message: 'Unable to set as main image. Please try again.'});
-        }else{
-            res.status(200).json({message: 'Main image successfully set'});
-        }
-    });
-});
-
-// deletes a product image
-router.post('/product/deleteimage', common.restrict, (req, res) => {
-    const db = req.app.db;
-    let fs = require('fs');
-    let path = require('path');
-
-    // get the productImage from the db
-    db.products.findOne({_id: common.getId(req.body.product_id)}, (err, product) => {
-        if(err){
-            console.info(err.stack);
-        }
-        if(req.body.productImage === product.productImage){
-            // set the produt_image to null
-            db.products.update({_id: common.getId(req.body.product_id)}, {$set: {productImage: null}}, {multi: false}, (err, numReplaced) => {
-                if(err){
-                    console.info(err.stack);
-                }
-                // remove the image from disk
-                fs.unlink(path.join('public', req.body.productImage), (err) => {
-                    if(err){
-                        res.status(400).json({message: 'Image not removed, please try again.'});
-                    }else{
-                        res.status(200).json({message: 'Image successfully deleted'});
-                    }
-                });
-            });
-        }else{
-            // remove the image from disk
-            fs.unlink(path.join('public', req.body.productImage), (err) => {
-                if(err){
-                    res.status(400).json({message: 'Image not removed, please try again.'});
-                }else{
-                    res.status(200).json({message: 'Image successfully deleted'});
-                }
-            });
+            res.status(200).json({message: 'Permalink validated successfully'});
         }
     });
 });
 
 // upload the file
-let multer = require('multer');
 let upload = multer({dest: 'public/uploads/'});
-router.post('/file/upload', common.restrict, upload.single('upload_file'), (req, res, next) => {
+router.post('/admin/file/upload', common.restrict, common.checkAccess, upload.single('upload_file'), (req, res, next) => {
     const db = req.app.db;
-    let fs = require('fs');
-    let path = require('path');
 
     if(req.file){
         // check for upload select
@@ -1266,17 +471,15 @@ router.post('/file/upload', common.restrict, upload.single('upload_file'), (req,
 });
 
 // delete a file via ajax request
-router.post('/testEmail', common.restrict, (req, res) => {
-    let config = common.getConfig();
+router.post('/admin/testEmail', common.restrict, (req, res) => {
+    let config = req.app.config;
     // TODO: Should fix this to properly handle result
     common.sendEmail(config.emailAddress, 'expressCart test email', 'Your email settings are working');
-    res.status(200).json('Test email sent');
+    res.status(200).json({message: 'Test email sent'});
 });
 
 // delete a file via ajax request
-router.post('/file/delete', common.restrict, (req, res) => {
-    let fs = require('fs');
-
+router.post('/admin/file/delete', common.restrict, common.checkAccess, (req, res) => {
     req.session.message = null;
     req.session.messageType = null;
 
@@ -1292,10 +495,7 @@ router.post('/file/delete', common.restrict, (req, res) => {
     });
 });
 
-router.get('/files', common.restrict, (req, res) => {
-    let glob = require('glob');
-    let fs = require('fs');
-
+router.get('/admin/files', common.restrict, (req, res) => {
     // loop files in /public/uploads/
     glob('public/uploads/**', {nosort: true}, (er, files) => {
         // sort array

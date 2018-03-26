@@ -4,16 +4,14 @@ const logger = require('morgan');
 const cookieParser = require('cookie-parser');
 const bodyParser = require('body-parser');
 const session = require('express-session');
-const bcrypt = require('bcrypt-nodejs');
 const moment = require('moment');
 const MongoStore = require('connect-mongodb-session')(session);
 const MongoClient = require('mongodb').MongoClient;
 const numeral = require('numeral');
 const helmet = require('helmet');
 const colors = require('colors');
-const common = require('./routes/common');
+const common = require('./lib/common');
 const mongodbUri = require('mongodb-uri');
-
 let handlebars = require('express-handlebars');
 
 // Validate our settings schema
@@ -40,7 +38,14 @@ if(config.paymentGateway === 'paypal'){
 if(config.paymentGateway === 'stripe'){
     const stripeConfig = ajv.validate(require('./config/stripeSchema'), require('./config/stripe.json'));
     if(stripeConfig === false){
-        console.log(colors.red(`PayPal config is incorrect: ${ajv.errorsText()}`));
+        console.log(colors.red(`Stripe config is incorrect: ${ajv.errorsText()}`));
+        process.exit(2);
+    }
+}
+if(config.paymentGateway === 'authorizenet'){
+    const authorizenetConfig = ajv.validate(require('./config/authorizenetSchema'), require('./config/authorizenet.json'));
+    if(authorizenetConfig === false){
+        console.log(colors.red(`Authorizenet config is incorrect: ${ajv.errorsText()}`));
         process.exit(2);
     }
 }
@@ -48,37 +53,56 @@ if(config.paymentGateway === 'stripe'){
 // require the routes
 const index = require('./routes/index');
 const admin = require('./routes/admin');
+const product = require('./routes/product');
+const customer = require('./routes/customer');
+const order = require('./routes/order');
+const user = require('./routes/user');
 const paypal = require('./routes/payments/paypal');
 const stripe = require('./routes/payments/stripe');
+const authorizenet = require('./routes/payments/authorizenet');
 
 const app = express();
 
 // view engine setup
 app.set('views', path.join(__dirname, '/views'));
-app.engine('hbs', handlebars({extname: 'hbs', layoutsDir: path.join(__dirname, 'views', 'layouts'), defaultLayout: 'layout.hbs'}));
+app.engine('hbs', handlebars({
+    extname: 'hbs',
+    layoutsDir: path.join(__dirname, 'views', 'layouts'),
+    defaultLayout: 'layout.hbs',
+    partialsDir: [ path.join(__dirname, 'views') ]
+}));
 app.set('view engine', 'hbs');
 
 // helpers for the handlebar templating platform
 handlebars = handlebars.create({
-    partialsDir: [
-        'views/partials/'
-    ],
     helpers: {
         perRowClass: function(numProducts){
             if(parseInt(numProducts) === 1){
-                return'col-md-12 col-xl-12 product-item';
+                return'col-md-12 col-xl-12 col m12 xl12 product-item';
             }
             if(parseInt(numProducts) === 2){
-                return'col-md-6 col-xl-6 product-item';
+                return'col-md-6 col-xl-6 col m6 xl6 product-item';
             }
             if(parseInt(numProducts) === 3){
-                return'col-md-4 col-xl-4 product-item';
+                return'col-md-4 col-xl-4 col m4 xl4 product-item';
             }
             if(parseInt(numProducts) === 4){
-                return'col-md-3 col-xl-3 product-item';
+                return'col-md-3 col-xl-3 col m3 xl3 product-item';
             }
 
-            return'col-md-6 col-xl-6 product-item';
+            return'col-md-6 col-xl-6 col m6 xl6 product-item';
+        },
+        menuMatch: function(title, search){
+            if(!title || !search){
+                return'';
+            }
+            if(title.toLowerCase().startsWith(search.toLowerCase())){
+                return'class="navActive"';
+            }
+            return'';
+        },
+        getTheme: function(view){
+            return`themes/${config.theme}/${view}`;
         },
         formatAmount: function(amt){
             if(amt){
@@ -148,6 +172,12 @@ handlebars = handlebars.create({
             }
             return options.inverse(this);
         },
+        toLower: function (value){
+            if(value){
+                return value.toLowerCase();
+            }
+            return null;
+        },
         formatDate: function (date, format){
             return moment(date).format(format);
         },
@@ -176,7 +206,7 @@ handlebars = handlebars.create({
             }
         },
         isAnAdmin: function (value, options){
-            if(value === 'true'){
+            if(value === 'true' || value === true){
                 return options.fn(this);
             }
             return options.inverse(this);
@@ -211,19 +241,24 @@ app.use(session({
 
 // serving static content
 app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'views', 'themes')));
 
 // Make stuff accessible to our router
 app.use((req, res, next) => {
     req.handlebars = handlebars;
-    req.bcrypt = bcrypt;
     next();
 });
 
 // setup the routes
 app.use('/', index);
-app.use('/admin', admin);
+app.use('/', customer);
+app.use('/', product);
+app.use('/', order);
+app.use('/', user);
+app.use('/', admin);
 app.use('/paypal', paypal);
 app.use('/stripe', stripe);
+app.use('/authorizenet', authorizenet);
 
 // catch 404 and forward to error handler
 app.use((req, res, next) => {
@@ -261,8 +296,9 @@ app.use((err, req, res, next) => {
 });
 
 // Nodejs version check
-if(parseInt(process.version.split('.')[0].replace('v', '')) <= 7){
-    console.log(colors.red('Please use Node.js version 7.x or above'));
+const nodeVersionMajor = parseInt(process.version.split('.')[0].replace('v', ''));
+if(nodeVersionMajor < 7){
+    console.log(colors.red(`Please use Node.js version 7.x or above. Current version: ${nodeVersionMajor}`));
     process.exit(2);
 }
 
@@ -280,7 +316,13 @@ MongoClient.connect(config.databaseConnectionString, {}, (err, client) => {
 
     // select DB
     const dbUriObj = mongodbUri.parse(config.databaseConnectionString);
-    const db = client.db(dbUriObj.database);
+    let db;
+    // if in testing, set the testing DB
+    if(process.env.NODE_ENV === 'test'){
+        db = client.db('testingdb');
+    }else{
+        db = client.db(dbUriObj.database);
+    }
 
     // setup the collections
     db.users = db.collection('users');
@@ -291,17 +333,20 @@ MongoClient.connect(config.databaseConnectionString, {}, (err, client) => {
     db.customers = db.collection('customers');
 
     // add db to app for routes
+    app.dbClient = client;
     app.db = db;
+    app.config = config;
+    app.port = app.get('port');
 
-    // add indexing
+    // run indexing
     common.runIndexing(app)
-    .then(common.testData(db, app))
     .then(app.listen(app.get('port')))
     .then(() => {
         // lift the app
+        app.emit('appStarted');
         console.log(colors.green('expressCart running on host: http://localhost:' + app.get('port')));
     })
-    .catch(() => {
+    .catch((err) => {
         console.error(colors.red('Error setting up indexes:' + err));
         process.exit(2);
     });

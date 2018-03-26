@@ -1,5 +1,5 @@
 let express = require('express');
-let common = require('../common');
+let common = require('../../lib/common');
 let numeral = require('numeral');
 let stripe = require('stripe')(common.getPaymentConfig().secretKey);
 let router = express.Router();
@@ -7,7 +7,7 @@ let router = express.Router();
 // The homepage of the site
 router.post('/checkout_action', (req, res, next) => {
     let db = req.app.db;
-    let config = common.getConfig();
+    let config = req.app.config;
     let stripeConfig = common.getPaymentConfig();
 
     // charge via stripe
@@ -60,7 +60,7 @@ router.post('/checkout_action', (req, res, next) => {
             }
 
             // get the new ID
-            let newId = newDoc.insertedIds;
+            let newId = newDoc.insertedIds['0'];
 
             // add to lunr index
             common.indexOrders(req.app)
@@ -70,7 +70,7 @@ router.post('/checkout_action', (req, res, next) => {
                     // set the results
                     req.session.messageType = 'success';
                     req.session.message = 'Your payment was successfully completed';
-                    req.session.paymentEmailAddr = newDoc.orderEmail;
+                    req.session.paymentEmailAddr = newDoc.ops[0].orderEmail;
                     req.session.paymentApproved = true;
                     req.session.paymentDetails = '<p><strong>Order ID: </strong>' + newId + '</p><p><strong>Transaction ID: </strong>' + charge.id + '</p>';
 

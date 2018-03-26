@@ -1,13 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const colors = require('colors');
+const async = require('async');
 const _ = require('lodash');
-const randtoken = require('rand-token');
-const common = require('./common');
+const common = require('../lib/common');
 
+// These is the customer facing routes
 router.get('/payment/:orderId', async (req, res, next) => {
     let db = req.app.db;
-    let config = common.getConfig();
+    let config = req.app.config;
 
     // render the payment complete message
     db.orders.findOne({_id: common.getId(req.params.orderId)}, async (err, result) => {
@@ -16,7 +17,7 @@ router.get('/payment/:orderId', async (req, res, next) => {
         }
         res.render(`${config.themeViews}payment_complete`, {
             title: 'Payment complete',
-            config: common.getConfig(),
+            config: req.app.config,
             session: req.session,
             pageCloseBtn: common.showCartCloseBtn('payment'),
             result: result,
@@ -30,7 +31,7 @@ router.get('/payment/:orderId', async (req, res, next) => {
 });
 
 router.get('/checkout', async (req, res, next) => {
-    let config = common.getConfig();
+    let config = req.app.config;
 
     // if there is no items in the cart then render a failure
     if(!req.session.cart){
@@ -43,7 +44,7 @@ router.get('/checkout', async (req, res, next) => {
     // render the checkout
     res.render(`${config.themeViews}checkout`, {
         title: 'Checkout',
-        config: common.getConfig(),
+        config: req.app.config,
         session: req.session,
         pageCloseBtn: common.showCartCloseBtn('checkout'),
         checkout: 'hidden',
@@ -56,7 +57,7 @@ router.get('/checkout', async (req, res, next) => {
 });
 
 router.get('/pay', async (req, res, next) => {
-    let config = common.getConfig();
+    const config = req.app.config;
 
     // if there is no items in the cart then render a failure
     if(!req.session.cart){
@@ -69,7 +70,7 @@ router.get('/pay', async (req, res, next) => {
     // render the payment page
     res.render(`${config.themeViews}pay`, {
         title: 'Pay',
-        config: common.getConfig(),
+        config: req.app.config,
         paymentConfig: common.getPaymentConfig(),
         pageCloseBtn: common.showCartCloseBtn('pay'),
         session: req.session,
@@ -83,12 +84,14 @@ router.get('/pay', async (req, res, next) => {
 });
 
 router.get('/cartPartial', (req, res) => {
-    res.render('partials/cart', {
+    const config = req.app.config;
+
+    res.render(`${config.themeViews}cart`, {
         pageCloseBtn: common.showCartCloseBtn(req.query.path),
         page: req.query.path,
         layout: false,
         helpers: req.handlebars.helpers,
-        config: common.getConfig(),
+        config: req.app.config,
         session: req.session
     });
 });
@@ -96,19 +99,25 @@ router.get('/cartPartial', (req, res) => {
 // show an individual product
 router.get('/product/:id', (req, res) => {
     let db = req.app.db;
-    let config = common.getConfig();
+    let config = req.app.config;
 
     db.products.findOne({$or: [{_id: common.getId(req.params.id)}, {productPermalink: req.params.id}]}, (err, result) => {
         // render 404 if page is not published
         if(err){
-            res.render('error', {message: '404 - Page not found', helpers: req.handlebars.helpers});
+            res.render('error', {title: 'Not found', message: 'Product not found', helpers: req.handlebars.helpers, config});
         }
         if(err || result == null || result.productPublished === 'false'){
-            res.render('error', {message: '404 - Page not found', helpers: req.handlebars.helper});
+            res.render('error', {title: 'Not found', message: 'Product not found', helpers: req.handlebars.helpers, config});
         }else{
             let productOptions = {};
             if(result.productOptions){
                 productOptions = JSON.parse(result.productOptions);
+            }
+
+            // If JSON query param return json instead
+            if(req.query.json === 'true'){
+                res.status(200).json(result);
+                return;
             }
 
             // show the view
@@ -135,311 +144,144 @@ router.get('/product/:id', (req, res) => {
     });
 });
 
-// logout
-router.get('/logout', (req, res) => {
-    req.session.user = null;
-    req.session.message = null;
-    req.session.messageType = null;
-    res.redirect('/');
-});
-
-// login form
-router.get('/login', (req, res) => {
-    let db = req.app.db;
-
-    db.users.count({}, (err, userCount) => {
-        if(err){
-            // if there are no users set the "needsSetup" session
-            req.session.needsSetup = true;
-            res.redirect('/setup');
-        }
-        // we check for a user. If one exists, redirect to login form otherwise setup
-        if(userCount > 0){
-            // set needsSetup to false as a user exists
-            req.session.needsSetup = false;
-            res.render('login', {
-                title: 'Login',
-                referringUrl: req.header('Referer'),
-                config: common.getConfig(),
-                message: common.clearSessionValue(req.session, 'message'),
-                messageType: common.clearSessionValue(req.session, 'messageType'),
-                helpers: req.handlebars.helpers,
-                showFooter: 'showFooter'
-            });
-        }else{
-            // if there are no users set the "needsSetup" session
-            req.session.needsSetup = true;
-            res.redirect('/setup');
-        }
-    });
-});
-
-// setup form is shown when there are no users setup in the DB
-router.get('/setup', (req, res) => {
-    let db = req.app.db;
-
-    db.users.count({}, (err, userCount) => {
-        if(err){
-            console.error(colors.red('Error getting users for setup', err));
-        }
-        // dont allow the user to "re-setup" if a user exists.
-        // set needsSetup to false as a user exists
-        req.session.needsSetup = false;
-        if(userCount === 0){
-            req.session.needsSetup = true;
-            res.render('setup', {
-                title: 'Setup',
-                config: common.getConfig(),
-                helpers: req.handlebars.helpers,
-                message: common.clearSessionValue(req.session, 'message'),
-                messageType: common.clearSessionValue(req.session, 'messageType'),
-                showFooter: 'showFooter'
-            });
-        }else{
-            res.redirect('/login');
-        }
-    });
-});
-
-// login the user and check the password
-router.post('/login_action', (req, res) => {
-    let db = req.app.db;
-    let bcrypt = req.bcrypt;
-
-    db.users.findOne({userEmail: req.body.email}, (err, user) => {
-        if(err){
-            req.session.message = 'Cannot find user.';
-            req.session.messageType = 'danger';
-            res.redirect('/login');
-            return;
-        }
-
-        // check if user exists with that email
-        if(user === undefined || user === null){
-            req.session.message = 'A user with that email does not exist.';
-            req.session.messageType = 'danger';
-            res.redirect('/login');
-        }else{
-            // we have a user under that email so we compare the password
-            if(bcrypt.compareSync(req.body.password, user.userPassword) === true){
-                req.session.user = req.body.email;
-                req.session.usersName = user.usersName;
-                req.session.userId = user._id.toString();
-                req.session.isAdmin = user.isAdmin;
-                res.redirect('/admin');
-            }else{
-                // password is not correct
-                req.session.message = 'Access denied. Check password and try again.';
-                req.session.messageType = 'danger';
-                res.redirect('/login');
-            }
-        }
-    });
-});
-
-// insert a customer
-router.post('/customer/create', (req, res) => {
+// Updates a single product quantity
+router.post('/product/updatecart', (req, res, next) => {
     const db = req.app.db;
-    const bcrypt = req.bcrypt;
+    let cartItems = JSON.parse(req.body.items);
+    let hasError = false;
 
-    let doc = {
-        email: req.body.email,
-        firstName: req.body.firstName,
-        lastName: req.body.lastName,
-        address1: req.body.address1,
-        address2: req.body.address2,
-        country: req.body.country,
-        state: req.body.state,
-        postcode: req.body.postcode,
-        phone: req.body.phone,
-        password: bcrypt.hashSync(req.body.password),
-        created: new Date()
-    };
-
-    // check for existing customer
-    db.customers.findOne({email: req.body.email}, (err, customer) => {
-        if(customer){
-            res.status(404).json({
-                err: 'A customer already exists with that email address'
-            });
-            return;
-        }
-        // email is ok to be used.
-        db.customers.insertOne(doc, (err, newCustomer) => {
-            if(err){
-                if(newCustomer){
-                    console.error(colors.red('Failed to insert customer: ' + err));
-                    res.status(400).json({
-                        err: 'A customer already exists with that email address'
-                    });
-                    return;
+    async.eachSeries(cartItems, (cartItem, callback) => {
+        let productQuantity = cartItem.itemQuantity ? cartItem.itemQuantity : 1;
+        if(cartItem.itemQuantity === 0){
+            // quantity equals zero so we remove the item
+            req.session.cart.splice(cartItem.cartIndex, 1);
+            callback(null);
+        }else{
+            db.products.findOne({_id: common.getId(cartItem.productId)}, (err, product) => {
+                if(err){
+                    console.error(colors.red('Error updating cart', err));
                 }
-                console.error(colors.red('Failed to insert customer: ' + err));
-                res.status(400).json({
-                    err: 'Customer creation failed.'
-                });
-                return;
+                if(product){
+                    let productPrice = parseFloat(product.productPrice).toFixed(2);
+                    if(req.session.cart[cartItem.cartIndex]){
+                        req.session.cart[cartItem.cartIndex].quantity = productQuantity;
+                        req.session.cart[cartItem.cartIndex].totalItemPrice = productPrice * productQuantity;
+                        callback(null);
+                    }
+                }else{
+                    hasError = true;
+                    callback(null);
+                }
+            });
+        }
+    }, () => {
+        // update total cart amount
+        common.updateTotalCartAmount(req, res);
+
+        // show response
+        if(hasError === false){
+            res.status(200).json({message: 'Cart successfully updated', totalCartItems: Object.keys(req.session.cart).length});
+        }else{
+            res.status(400).json({message: 'There was an error updating the cart', totalCartItems: Object.keys(req.session.cart).length});
+        }
+    });
+});
+
+// Remove single product from cart
+router.post('/product/removefromcart', (req, res, next) => {
+    // remove item from cart
+    async.each(req.session.cart, (item, callback) => {
+        if(item){
+            if(item.productId === req.body.cart_index){
+                req.session.cart = _.pull(req.session.cart, item);
+            }
+        }
+        callback();
+    }, () => {
+        // update total cart amount
+        common.updateTotalCartAmount(req, res);
+        res.status(200).json({message: 'Product successfully removed', totalCartItems: Object.keys(req.session.cart).length});
+    });
+});
+
+// Totally empty the cart
+router.post('/product/emptycart', (req, res, next) => {
+    delete req.session.cart;
+    delete req.session.orderId;
+
+    // update total cart amount
+    common.updateTotalCartAmount(req, res);
+    res.status(200).json({message: 'Cart successfully emptied', totalCartItems: 0});
+});
+
+// Add item to cart
+router.post('/product/addtocart', (req, res, next) => {
+    const db = req.app.db;
+    let productQuantity = req.body.productQuantity ? parseInt(req.body.productQuantity) : 1;
+
+    // setup cart object if it doesn't exist
+    if(!req.session.cart){
+        req.session.cart = [];
+    }
+
+    // Get the item from the DB
+    db.products.findOne({_id: common.getId(req.body.productId)}, (err, product) => {
+        if(err){
+            console.error(colors.red('Error adding to cart', err));
+            return res.status(400).json({message: 'Error updating cart. Please try again.'});
+        }
+
+        // No product found
+        if(!product){
+            return res.status(400).json({message: 'Error updating cart. Please try again.'});
+        }
+
+        let productPrice = parseFloat(product.productPrice).toFixed(2);
+
+        // Doc used to test if existing in the cart with the options. If not found, we add new.
+        let options = {};
+        if(req.body.productOptions){
+            options = JSON.parse(req.body.productOptions);
+        }
+        let findDoc = {
+            productId: req.body.productId,
+            options: options
+        };
+
+        // if exists we add to the existing value
+        let cartIndex = _.findIndex(req.session.cart, findDoc);
+        if(cartIndex > -1){
+            req.session.cart[cartIndex].quantity = parseInt(req.session.cart[cartIndex].quantity) + productQuantity;
+            req.session.cart[cartIndex].totalItemPrice = productPrice * parseInt(req.session.cart[cartIndex].quantity);
+        }else{
+            // Doesnt exist so we add to the cart session
+            req.session.cartTotalItems = req.session.cartTotalItems + productQuantity;
+
+            // new product deets
+            let productObj = {};
+            productObj.productId = req.body.productId;
+            productObj.title = product.productTitle;
+            productObj.quantity = productQuantity;
+            productObj.totalItemPrice = productPrice * productQuantity;
+            productObj.options = options;
+            productObj.productImage = product.productImage;
+            if(product.productPermalink){
+                productObj.link = product.productPermalink;
+            }else{
+                productObj.link = product._id;
             }
 
-            // Customer creation successful
-            req.session.customer = newCustomer.ops[0];
-            res.status(200).json({
-                message: 'Successfully logged in',
-                customer: newCustomer
-            });
-        });
-    });
-});
-
-// login the customer and check the password
-router.post('/customer/login_action', (req, res) => {
-    let db = req.app.db;
-    let bcrypt = req.bcrypt;
-
-    db.customers.findOne({email: req.body.loginEmail}, (err, customer) => {
-        if(err){
-            // An error accurred
-            return res.status(400).json({
-                err: 'Access denied. Check password and try again.'
-            });
+            // merge into the current cart
+            req.session.cart.push(productObj);
         }
 
-        // check if customer exists with that email
-        if(customer === undefined || customer === null){
-            return res.status(400).json({
-                err: 'A customer with that email does not exist.'
-            });
-        }
-        // we have a customer under that email so we compare the password
-        if(bcrypt.compareSync(req.body.loginPassword, customer.password) === false){
-            // password is not correct
-            return res.status(400).json({
-                err: 'Access denied. Check password and try again.'
-            });
-        }
+        // update total cart amount
+        common.updateTotalCartAmount(req, res);
 
-        // Customer login successful
-        req.session.customer = customer;
-        return res.status(200).json({
-            message: 'Successfully logged in',
-            customer: customer
-        });
+        // update how many products in the shopping cart
+        req.session.cartTotalItems = Object.keys(req.session.cart).length;
+        return res.status(200).json({message: 'Cart successfully updated', totalCartItems: Object.keys(req.session.cart).length});
     });
-});
-
-// customer forgotten password
-router.get('/customer/forgotten', (req, res) => {
-    res.render('forgotten', {
-        title: 'Forgotten',
-        route: 'customer',
-        forgotType: 'customer',
-        config: common.getConfig(),
-        helpers: req.handlebars.helpers,
-        message: common.clearSessionValue(req.session, 'message'),
-        messageType: common.clearSessionValue(req.session, 'messageType'),
-        showFooter: 'showFooter'
-    });
-});
-
-// forgotten password
-router.post('/customer/forgotten_action', (req, res) => {
-    const db = req.app.db;
-    const config = common.getConfig();
-    let passwordToken = randtoken.generate(30);
-
-    // find the user
-    db.customers.findOne({email: req.body.email}, (err, customer) => {
-        // if we have a customer, set a token, expiry and email it
-        if(customer){
-            let tokenExpiry = Date.now() + 3600000;
-            db.customers.update({email: req.body.email}, {$set: {resetToken: passwordToken, resetTokenExpiry: tokenExpiry}}, {multi: false}, (err, numReplaced) => {
-                // send forgotten password email
-                let mailOpts = {
-                    to: req.body.email,
-                    subject: 'Forgotten password request',
-                    body: `You are receiving this because you (or someone else) have requested the reset of the password for your user account.\n\n
-                        Please click on the following link, or paste this into your browser to complete the process:\n\n
-                        ${config.baseUrl}/customer/reset/${passwordToken}\n\n
-                        If you did not request this, please ignore this email and your password will remain unchanged.\n`
-                };
-
-                // send the email with token to the user
-                // TODO: Should fix this to properly handle result
-                common.sendEmail(mailOpts.to, mailOpts.subject, mailOpts.body);
-                req.session.message = 'An email has been sent to ' + req.body.email + ' with further instructions';
-                req.session.message_type = 'success';
-                return res.redirect('/customer/forgotten');
-            });
-        }else{
-            req.session.message = 'Account does not exist';
-            res.redirect('/customer/forgotten');
-        }
-    });
-});
-
-// reset password form
-router.get('/customer/reset/:token', (req, res) => {
-    const db = req.app.db;
-
-    // Find the customer using the token
-    db.customers.findOne({resetToken: req.params.token, resetTokenExpiry: {$gt: Date.now()}}, (err, customer) => {
-        if(!customer){
-            req.session.message = 'Password reset token is invalid or has expired';
-            req.session.message_type = 'danger';
-            res.redirect('/forgot');
-            return;
-        }
-
-        // show the password reset form
-        res.render('reset', {
-            title: 'Reset password',
-            token: req.params.token,
-            route: 'customer',
-            config: common.getConfig(),
-            message: common.clearSessionValue(req.session, 'message'),
-            message_type: common.clearSessionValue(req.session, 'message_type'),
-            show_footer: 'show_footer',
-            helpers: req.handlebars.helpers
-        });
-    });
-});
-
-// reset password action
-router.post('/customer/reset/:token', (req, res) => {
-    const db = req.app.db;
-    let bcrypt = req.bcrypt;
-
-    // get the customer
-    db.customers.findOne({resetToken: req.params.token, resetTokenExpiry: {$gt: Date.now()}}, (err, customer) => {
-        if(!customer){
-            req.session.message = 'Password reset token is invalid or has expired';
-            req.session.message_type = 'danger';
-            return res.redirect('/forgot');
-        }
-
-        // update the password and remove the token
-        let newPassword = bcrypt.hashSync(req.body.password);
-        db.customers.update({email: customer.email}, {$set: {password: newPassword, resetToken: undefined, resetTokenExpiry: undefined}}, {multi: false}, (err, numReplaced) => {
-            let mailOpts = {
-                to: customer.email,
-                subject: 'Password successfully reset',
-                body: 'This is a confirmation that the password for your account ' + customer.email + ' has just been changed successfully.\n'
-            };
-
-            // TODO: Should fix this to properly handle result
-            common.sendEmail(mailOpts.to, mailOpts.subject, mailOpts.body);
-            req.session.message = 'Password successfully updated';
-            req.session.message_type = 'success';
-            return res.redirect('/pay');
-        });
-        return'';
-    });
-});
-
-// logout the customer
-router.post('/customer/logout', (req, res) => {
-    req.session.customer = null;
-    res.status(200).json({});
 });
 
 // search products
@@ -447,7 +289,7 @@ router.get('/search/:searchTerm/:pageNum?', (req, res) => {
     let db = req.app.db;
     let searchTerm = req.params.searchTerm;
     let productsIndex = req.app.productsIndex;
-    let config = common.getConfig();
+    let config = req.app.config;
     let numberProducts = config.productsPerPage ? config.productsPerPage : 6;
 
     let lunrIdArray = [];
@@ -465,12 +307,18 @@ router.get('/search/:searchTerm/:pageNum?', (req, res) => {
         common.getMenu(db)
     ])
     .then(([results, menu]) => {
+        // If JSON query param return json instead
+        if(req.query.json === 'true'){
+            res.status(200).json(results.data);
+            return;
+        }
+
         res.render(`${config.themeViews}index`, {
             title: 'Results',
             results: results.data,
             filtered: true,
             session: req.session,
-            metaDescription: common.getConfig().cartTitle + ' - Search term: ' + searchTerm,
+            metaDescription: req.app.config.cartTitle + ' - Search term: ' + searchTerm,
             searchTerm: searchTerm,
             pageCloseBtn: common.showCartCloseBtn('search'),
             message: common.clearSessionValue(req.session, 'message'),
@@ -495,7 +343,7 @@ router.get('/category/:cat/:pageNum?', (req, res) => {
     let db = req.app.db;
     let searchTerm = req.params.cat;
     let productsIndex = req.app.productsIndex;
-    let config = common.getConfig();
+    let config = req.app.config;
     let numberProducts = config.productsPerPage ? config.productsPerPage : 6;
 
     let lunrIdArray = [];
@@ -515,13 +363,19 @@ router.get('/category/:cat/:pageNum?', (req, res) => {
     .then(([results, menu]) => {
         const sortedMenu = common.sortMenu(menu);
 
+        // If JSON query param return json instead
+        if(req.query.json === 'true'){
+            res.status(200).json(results.data);
+            return;
+        }
+
         res.render(`${config.themeViews}index`, {
             title: 'Category',
             results: results.data,
             filtered: true,
             session: req.session,
             searchTerm: searchTerm,
-            metaDescription: common.getConfig().cartTitle + ' - Category: ' + searchTerm,
+            metaDescription: req.app.config.cartTitle + ' - Category: ' + searchTerm,
             pageCloseBtn: common.showCartCloseBtn('category'),
             message: common.clearSessionValue(req.session, 'message'),
             messageType: common.clearSessionValue(req.session, 'messageType'),
@@ -544,7 +398,7 @@ router.get('/category/:cat/:pageNum?', (req, res) => {
 // return sitemap
 router.get('/sitemap.xml', (req, res, next) => {
     let sm = require('sitemap');
-    let config = common.getConfig();
+    let config = req.app.config;
 
     common.addSitemapProducts(req, res, (err, products) => {
         if(err){
@@ -576,7 +430,7 @@ router.get('/sitemap.xml', (req, res, next) => {
 
 router.get('/page/:pageNum', (req, res, next) => {
     let db = req.app.db;
-    let config = common.getConfig();
+    let config = req.app.config;
     let numberProducts = config.productsPerPage ? config.productsPerPage : 6;
 
     Promise.all([
@@ -584,15 +438,21 @@ router.get('/page/:pageNum', (req, res, next) => {
         common.getMenu(db)
     ])
     .then(([results, menu]) => {
+        // If JSON query param return json instead
+        if(req.query.json === 'true'){
+            res.status(200).json(results.data);
+            return;
+        }
+
         res.render(`${config.themeViews}index`, {
             title: 'Shop',
             results: results.data,
             session: req.session,
             message: common.clearSessionValue(req.session, 'message'),
             messageType: common.clearSessionValue(req.session, 'messageType'),
-            metaDescription: common.getConfig().cartTitle + ' - Products page: ' + req.params.pageNum,
+            metaDescription: req.app.config.cartTitle + ' - Products page: ' + req.params.pageNum,
             pageCloseBtn: common.showCartCloseBtn('page'),
-            config: common.getConfig(),
+            config: req.app.config,
             productsPerPage: numberProducts,
             totalProductCount: results.totalProducts,
             pageNum: req.params.pageNum,
@@ -610,7 +470,7 @@ router.get('/page/:pageNum', (req, res, next) => {
 // The main entry point of the shop
 router.get('/:page?', (req, res, next) => {
     let db = req.app.db;
-    let config = common.getConfig();
+    let config = req.app.config;
     let numberProducts = config.productsPerPage ? config.productsPerPage : 6;
 
     // if no page is specified, just render page 1 of the cart
@@ -620,6 +480,12 @@ router.get('/:page?', (req, res, next) => {
             common.getMenu(db)
         ])
         .then(([results, menu]) => {
+            // If JSON query param return json instead
+            if(req.query.json === 'true'){
+                res.status(200).json(results.data);
+                return;
+            }
+
             res.render(`${config.themeViews}index`, {
                 title: `${config.cartTitle} - Shop`,
                 theme: config.theme,
@@ -628,7 +494,7 @@ router.get('/:page?', (req, res, next) => {
                 message: common.clearSessionValue(req.session, 'message'),
                 messageType: common.clearSessionValue(req.session, 'messageType'),
                 pageCloseBtn: common.showCartCloseBtn('page'),
-                config: common.getConfig(),
+                config: req.app.config,
                 productsPerPage: numberProducts,
                 totalProductCount: results.totalProducts,
                 pageNum: 1,
@@ -656,12 +522,13 @@ router.get('/:page?', (req, res, next) => {
                 res.render(`${config.themeViews}page`, {
                     title: page.pageName,
                     page: page,
+                    searchTerm: req.params.page,
                     session: req.session,
                     message: common.clearSessionValue(req.session, 'message'),
                     messageType: common.clearSessionValue(req.session, 'messageType'),
                     pageCloseBtn: common.showCartCloseBtn('page'),
-                    config: common.getConfig(),
-                    metaDescription: common.getConfig().cartTitle + ' - ' + page,
+                    config: req.app.config,
+                    metaDescription: req.app.config.cartTitle + ' - ' + page,
                     helpers: req.handlebars.helpers,
                     showFooter: 'showFooter',
                     menu: common.sortMenu(await common.getMenu(db))
@@ -669,7 +536,7 @@ router.get('/:page?', (req, res, next) => {
             }else{
                 res.status(404).render('error', {
                     title: '404 Error - Page not found',
-                    config: common.getConfig(),
+                    config: req.app.config,
                     message: '404 Error - Page not found',
                     helpers: req.handlebars.helpers,
                     showFooter: 'showFooter',

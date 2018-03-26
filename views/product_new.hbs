@@ -1,4 +1,4 @@
-{{> menu}}
+{{> partials/menu}}
 <div class="col-lg-9">
     <form method="post" class="form-horizontal" id="insert_form" action="/admin/product/insert" data-toggle="validator">
         <div class="col-lg-12">
@@ -102,7 +102,7 @@
                 <label for="frmProductTags" class="col-sm-2 control-label">Product tag words</label>
                 <div class="col-sm-10">
                     <input type="text" class="form-control" id="frmProductTags" name="frmProductTags">
-                    <p class="help-block">Tag words are used to making searching for products easier</p>
+                    <p class="help-block">Tag words used to indexed products, making them easier to find and filter.</p>
                 </div>
             </div>
         </div>
@@ -112,7 +112,7 @@
 <link href="https://cdnjs.cloudflare.com/ajax/libs/summernote/0.8.2/summernote.css" rel="stylesheet">
 <script>
     $(document).ready(function() {
-        $('#editor').summernote({  
+        $('#editor').summernote({
             height: 300,
             minHeight: null
         });

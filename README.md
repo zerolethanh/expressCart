@@ -1,5 +1,14 @@
 # expressCart
 
+![expressCart](https://raw.githubusercontent.com/mrvautin/expressCart/master/public/images/logo.png)
+
+`expressCart` is a fully functional shopping cart built in Node.js (Express, MongoDB) with Stripe, PayPal and Authorize.net payments.
+
+[![Github stars](https://img.shields.io/github/stars/mrvautin/expressCart.svg?style=social&label=Star)](https://github.com/mrvautin/expressCart)
+[![Build Status](https://travis-ci.org/mrvautin/expressCart.svg?branch=master)](https://travis-ci.org/mrvautin/expressCart)
+
+[**View the demo**](https://demo.expresscart.markmoffat.com/)
+
 ## Installation
 
 1. Create a folder to hold your installation: `mkdir expressCart`
@@ -19,6 +28,21 @@ Keeping expressCart running after closing the terminal can be done in a few ways
 
 > Note: Node.js version 7.x or greater is needed.
 
+### Docker
+
+The easiest way to get up and running is using Docker. Once the Docker CLI is installed from [https://www.docker.com/get-docker](https://www.docker.com/get-docker).
+
+1. Enter the root of the expressCart application
+2. Change `/config/settings.json` - `"databaseConnectionString": "mongodb://mongodb:27017/expresscart"`
+3. Run: `docker-compose up --build`
+4. Visit [http://127.0.0.1:1111](http://127.0.0.1:1111) in your browser
+
+### Deploy on Heroku
+
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/mrvautin/expressCart)
+
+> Note: When deploying to Heroku you will need to configure your external MongoDB either on your own server or a hosted service on mLab, AWS etc.
+
 ## Admin
 
 Visit: [http://127.0.0.1:1111/admin](http://127.0.0.1:1111/admin)
@@ -36,6 +60,12 @@ Sample homepage
 
 Admin page
 ![Admin page](https://mrvautin.com/content/images/2018/01/admin-settings.png)
+
+Popout cart
+![Popout cart](https://mrvautin.com/content/images/2018/02/popout-cart.png)
+
+Great themes
+![Great themes](https://mrvautin.com/content/images/2018/02/expresscart-mono-theme.png)
 
 ##### CSS
 
@@ -55,21 +85,20 @@ Set this value to a full 2 decimal value with no commas or currency symbols.
 
 ##### Permalink
 
-A permalink is a nice link to your product which is normally shown in search engine rankings. By default, if you Permalink value is set when adding a product,
-one will be generated using the Product title with spaces replaced by dashes.
+A permalink is a nice link to your product which is normally shown in search engine rankings. By default, a no Permalink value is set when adding a product one will be generated using the Product title with spaces replaced by dashes.
 
 ##### Options
 
-You may want to set product options such as 'Size', 'Color' etc.
+You may want to set product options such as `Size`, `Color` etc.
 
 Below is an explanation of the fields and what they do
 
 `Name` = Something easy to recognize to administer
-`Label` = This will be shown to the customer (eg: 'Select size')
-`Type` = You can set the option to a 'Select' (drop down menu), 'Radio' (An optional button) or a 'Checkbox' for an on/off or true/false option
-`Options` = Available options are added using a comma separated list. For size options you may set: 'Small,Medium,Large' or 'S,M,Link
+`Label` = This will be shown to the customer (eg: `Select size`, `Select color` etc)
+`Type` = You can set the option to a `Select` (drop down menu), `Radio` (An optional button) or a `Checkbox` for an on/off or true/false option
+`Options` = Available options are added using a comma separated list. For size options you may set: `Small,Medium,Large` or `S,M,L`
 
-Note: An `Options` value is not required when `Type` is set to 'Checkbox'.
+Note: An `Options` value is not required when `Type` is set to `Checkbox`.
 
 ##### Product tag words
 
@@ -131,7 +160,7 @@ Set this value to your chosen currency symbol. Eg: $, £, €.
 
 Themes are a set of handlebars views and a stylesheet file. See `Cloth` theme as example.
 
-Themes are loaded from `/public/themes/`.
+Themes are loaded from `/views/themes/`.
 
 It would be great to have some themes contributed back for others to use.
 
@@ -189,6 +218,21 @@ The Stripe config file is located: `/config/stripe.json`. A example Stripe setti
 
 Note: The `secretKey` and `publicKey` is obtained from your Stripe account dashboard.
 
+##### Authorize.net (Payments)
+
+The Authorize.net config file is located: `/config/authorizenet.json`. A example Authorize.net settings file is provided:
+
+```
+{
+    "loginId": "loginId",
+    "transactionKey": "transactionKey",
+    "clientKey": "clientKey",
+    "mode": "test"
+}
+```
+
+Note: The credentials are obtained from your Authorize.net account dashboard.
+
 ## Email settings
 
 You will need to configure your SMTP details for expressCart to send email receipts to your customers.
@@ -240,6 +284,12 @@ You can re-order menu items by clicking and dragging the arrows icon and placing
 You may want to create a static page to show contact details, about us, shipping information etc.
 
 New static pages are setup via `/admin/settings/pages`.
+
+## TODO
+
+- Add some tests...
+- Separate API and frontend
+- Modernize the frontend
 
 ## Contributing
 

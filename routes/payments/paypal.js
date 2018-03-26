@@ -1,5 +1,5 @@
 let express = require('express');
-let common = require('../common');
+let common = require('../../lib/common');
 let paypal = require('paypal-rest-sdk');
 let router = express.Router();
 
@@ -10,9 +10,9 @@ router.get('/checkout_cancel', (req, res, next) => {
 
 router.get('/checkout_return', (req, res, next) => {
     let db = req.app.db;
-    let config = common.getConfig();
+    let config = req.app.config;
     let paymentId = req.session.paymentId;
-    let payerId = req.param('PayerID');
+    let payerId = req.query['PayerID'];
 
     let details = {'payer_id': payerId};
     paypal.payment.execute(paymentId, details, (error, payment) => {
@@ -107,7 +107,7 @@ router.get('/checkout_return', (req, res, next) => {
 // The homepage of the site
 router.post('/checkout_action', (req, res, next) => {
     let db = req.app.db;
-    let config = common.getConfig();
+    let config = req.app.config;
     let paypalConfig = common.getPaymentConfig();
 
     // setup the payment object
@@ -190,10 +190,7 @@ router.post('/checkout_action', (req, res, next) => {
                     }
 
                     // get the new ID
-                    let newId = '';
-                    if(newDoc.insertedIds.length > 0){
-                        newId = newDoc.insertedIds[0].toString();
-                    }
+                    let newId = newDoc.insertedIds['0'];
 
                     // set the order ID in the session
                     req.session.orderId = newId;
